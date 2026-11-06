@@ -54,7 +54,8 @@ function renderSetup() {
   view.innerHTML = `<section class="card">
     <h2>처음 설정</h2>
     <p class="hint">GitHub 토큰을 넣어 주세요. 이 폰의 브라우저에만 저장되고 GitHub 로만 보내집니다.</p>
-    <label class="field">토큰<input id="token" type="password" autocomplete="off" placeholder="github_pat_…"></label>
+    <label class="field">토큰<input id="token" type="text" name="daiso-access" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="github_pat_…"></label>
+    <p class="hint" id="token-info"></p>
     <button class="btn primary" id="save-token">연결 확인 후 저장</button>
     ${lsGet(K.token) ? '<button class="btn ghost" id="back-home">돌아가기</button><button class="btn ghost danger" id="clear-token">이 폰에서 토큰 지우기</button>' : ''}
   </section>`;
@@ -421,6 +422,8 @@ document.addEventListener('change', (e) => {
 
 document.addEventListener('input', (e) => {
   const t = e.target;
+  // 같은 github.io 주소의 다른 앱 토큰이 들어가지 않았는지 끝자리로 확인한다 (화면 캡처에 토큰이 찍히지 않게 칸은 가린다)
+  if (t.id === 'token') $('#token-info').textContent = t.value.trim() ? `넣은 토큰: ${t.value.trim().length}자, 끝 4자리 ${t.value.trim().slice(-4)}` : '';
   if (t.id === 'memo') lsSet(K.memo(job.id), t.value);
   if (t.id === 'keyword') job.keyword = t.value;
   if (t.dataset.p != null) {
