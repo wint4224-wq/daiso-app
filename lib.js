@@ -43,6 +43,9 @@ export function jobPhase({ work, status, reqs = [] }) {
   return 'extracting';
 }
 
+/** 요청 파일 이름 → 단계 이름 (generate-1730000000.json → generate) */
+export const reqStage = (name) => name.split(/[-.]/)[0];
+
 /** 상품 칸을 폰에서 고쳤을 때 (노트북 화면의 "직접 입력" 과 같게) */
 export function editField(product, key, value) {
   const f = (product[key] ||= {});

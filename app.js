@@ -5,7 +5,7 @@
 import { parse } from './shared/structmd.js';
 import { renderPost } from './shared/preview.js';
 import { toPasteHtml, toPlainText, stripAiMarkers } from './shared/pasteHtml.js';
-import { MAX_PHOTOS, LONG_EDGE, client, newWork, jobDir, jobPhase, editField, reviewNotes, tagsText, hex6, humanNow } from './lib.js';
+import { MAX_PHOTOS, LONG_EDGE, client, newWork, jobDir, jobPhase, reqStage, editField, reviewNotes, tagsText, hex6, humanNow } from './lib.js';
 
 const CFG = window.DAISO_CONFIG || {};
 const K = { token: 'daiso.token', memo: (id) => `daiso.memo.${id}` };
@@ -93,9 +93,9 @@ async function renderHome() {
     const ids = (await gh.list('data/jobs')).filter((n) => n.startsWith('w_')).sort().reverse().slice(0, 8);
     const rows = await Promise.all(
       ids.map(async (id) => {
-        const [work, status, choice, reqs] = await Promise.all([gh.readJson(`${jobDir(id)}/work.json`), gh.readJson(`${jobDir(id)}/status.json`), gh.readJson(`${jobDir(id)}/choice.json`), gh.list(`${jobDir(id)}/req`)]);
-        const phase = jobPhase({ work, status, reqs: reqs.map((r) => r.replace('.json', '')) });
-        const label = choice ? (choice.route === 'phone' ? '폰에서 올림' : '노트북 대기') : PHASE_LABEL[phase];
+        const [work, status, choice, naver, reqs] = await Promise.all([gh.readJson(`${jobDir(id)}/work.json`), gh.readJson(`${jobDir(id)}/status.json`), gh.readJson(`${jobDir(id)}/choice.json`), gh.readJson(`${jobDir(id)}/naver.json`), gh.list(`${jobDir(id)}/req`)]);
+        const phase = jobPhase({ work, status, reqs: reqs.map(reqStage) });
+        const label = choice ? (choice.route === 'phone' ? '폰에서 올림' : naver?.done ? '임시저장 완료' : naver?.error ? '임시저장 실패' : '노트북 대기') : PHASE_LABEL[phase];
         return `<li><a href="#/job/${id}"><span>${esc(work?.keyword || work?.products?.[0]?.name?.value || `사진 ${work?.photos?.length ?? 0}장`)}</span><small>${esc(work?.createdAt?.slice(5, 16) || '')} · ${esc(label)}</small></a></li>`;
       }),
     );
@@ -163,7 +163,7 @@ async function loadJob(id) {
   const dir = jobDir(id);
   const [work, status, choice, naver, reqs] = await Promise.all([gh.readJson(`${dir}/work.json`), gh.readJson(`${dir}/status.json`), gh.readJson(`${dir}/choice.json`), gh.readJson(`${dir}/naver.json`), gh.list(`${dir}/req`)]);
   if (!work) throw new Error('작업을 찾지 못했습니다');
-  Object.assign(job, { work, status, choice, naver, reqs: reqs.map((r) => r.replace('.json', '')) });
+  Object.assign(job, { work, status, choice, naver, reqs: reqs.map(reqStage) });
   const phase = jobPhase(job);
   if (phase === 'draft' && job.draft?.id !== status.draftId) {
     job.draft = await gh.readJson(`drafts/${status.draftId}.json`);
@@ -189,7 +189,7 @@ async function refreshJob(force = false) {
       job.phaseKey = key;
       render(phase);
     }
-    const waiting = phase === 'extracting' || phase === 'generating' || (job.choice?.route === 'laptop' && !job.naver?.done);
+    const waiting = phase === 'extracting' || phase === 'generating' || (job.choice?.route === 'laptop' && !job.naver?.done && !job.naver?.error);
     if (waiting) timer = setTimeout(() => refreshJob(), 8000);
   } catch (e) {
     if (force) view.innerHTML = `<section class="card"><p class="bad">${esc(e.message)}</p><a class="btn ghost" href="#/">처음으로</a></section>`;
@@ -243,7 +243,7 @@ async function requestGenerate() {
     body.keyword = $('#keyword')?.value.trim() || job.work.keyword || '';
     body.products = job.work.products;
   }
-  await gh.commit('phone: 글 쓰기', [{ path: `${jobDir(job.id)}/req/generate.json`, text: JSON.stringify(body) }]);
+  await gh.commit('phone: 글 쓰기', [{ path: `${jobDir(job.id)}/req/generate-${Date.now()}.json`, text: JSON.stringify(body) }]);
   toast('글 쓰기를 시작했습니다');
   await refreshJob(true);
 }
@@ -258,7 +258,7 @@ function draftHtml() {
   const after = ch?.route === 'phone'
     ? '<div class="banner ok">폰에서 올린 글로 표시했습니다.</div>'
     : ch?.route === 'laptop'
-      ? `<div class="banner ${job.naver?.done ? 'ok' : job.naver?.error ? 'bad' : 'run'}">${esc(job.naver?.message || '노트북을 켜면 자동으로 임시저장됩니다.')}</div>`
+      ? `<div class="banner ${job.naver?.done ? 'ok' : job.naver?.error ? 'bad' : 'run'}">${esc(job.naver?.message || '프로그램이 켜져 있으면 1분 안에 시작합니다. 꺼져 있으면 켜질 때 시작합니다.')}${job.naver?.error ? '<button class="btn small" data-act="naver-retry">다시 시도</button>' : ''}</div>`
       : `<section class="card"><h2>어떻게 올릴까요?</h2>
         <button class="btn primary big" data-act="laptop">노트북에서 자동 임시저장</button>
         <p class="hint">사진 위치·서식·태그까지 들어갑니다. 노트북을 켜면 시작됩니다.</p>
@@ -373,12 +373,18 @@ function toggleMic() {
 
 // ─────────────── 연결 ───────────────
 
-async function act(fn) {
+/** 저장소에 쓰는 버튼: 보내는 동안 잠가서 두 번 전송되지 않게 한다 */
+async function act(fn, btn) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '보내는 중…';
   try {
     await fn();
   } catch (e) {
     toast(e.message, true);
   }
+  btn.disabled = false;
+  btn.textContent = label;
 }
 
 document.addEventListener('click', (e) => {
@@ -401,15 +407,16 @@ document.addEventListener('click', (e) => {
   }
   if (t.dataset.copy) return copy(t.dataset.copy);
   const a = t.dataset.act;
-  if (a === 'write') return act(requestGenerate);
-  if (a === 'laptop') return act(() => saveChoice('laptop'));
-  if (a === 'posted') return act(() => saveChoice('phone'));
+  if (a === 'write') return act(requestGenerate, t);
+  if (a === 'laptop') return act(() => saveChoice('laptop'), t);
+  if (a === 'posted') return act(() => saveChoice('phone'), t);
+  if (a === 'naver-retry') return act(() => gh.commit('phone: 임시저장 다시 시도', [], { deletes: [`${jobDir(job.id)}/naver.json`] }).then(() => refreshJob(true)), t);
   if (a === 'direct') {
     job.direct = true;
     render('draft');
     return document.querySelector('.direct')?.scrollIntoView({ behavior: 'smooth' });
   }
-  if (a === 'retry') return act(() => (job.status.stage === 'extract' ? gh.commit('phone: 다시 읽기', [{ path: `${jobDir(job.id)}/req/extract.json`, text: JSON.stringify({ at: humanNow() }) }]).then(() => refreshJob(true)) : requestGenerate()));
+  if (a === 'retry') return act(() => (job.status.stage === 'extract' ? gh.commit('phone: 다시 읽기', [{ path: `${jobDir(job.id)}/req/extract-${Date.now()}.json`, text: JSON.stringify({ at: humanNow() }) }]).then(() => refreshJob(true)) : requestGenerate()), t);
 });
 
 document.addEventListener('change', (e) => {
