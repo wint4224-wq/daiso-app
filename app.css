@@ -88,3 +88,17 @@ textarea { resize: vertical; line-height: 1.6; }
 #toast.on { opacity: 1; }
 #toast.bad { background: var(--bad); color: #fff; }
 @media (prefers-color-scheme: dark) { #toast.bad { color: #2a0d0b; } }
+
+/* 다이소몰 리뷰 장단점 (shared/reviews.js) */
+.rv-slot:not(:empty) { margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: var(--surface2); }
+.rv { font-size: 14px; line-height: 1.6; }
+.rv summary { cursor: pointer; font-weight: 700; }
+.rv-wait { color: var(--muted); }
+.rv h4 { margin: 10px 0 2px; font-size: 14px; }
+.rv ol, .rv ul { margin: 0; padding-left: 20px; }
+.rv li { margin-bottom: 4px; }
+.rv q { color: var(--muted); }
+.rv-name { color: var(--muted); margin: 6px 0 0; font-size: 13px; }
+.rv-one { font-weight: 600; margin: 4px 0; }
+.rv-kw, .rv-meta { color: var(--muted); font-size: 12px; margin: 8px 0 0; }
+.rv-none { color: var(--muted); margin: 0; }

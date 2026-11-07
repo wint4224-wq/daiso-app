@@ -5,6 +5,7 @@
 import { parse } from './shared/structmd.js';
 import { renderPost } from './shared/preview.js';
 import { toPasteHtml, toPlainText, stripAiMarkers } from './shared/pasteHtml.js';
+import { reviewFor, reviewCardHtml } from './shared/reviews.js';
 import { MAX_PHOTOS, LONG_EDGE, client, newWork, jobDir, jobPhase, reqStage, editField, reviewNotes, tagsText, hex6, humanNow } from './lib.js';
 
 const CFG = window.DAISO_CONFIG || {};
@@ -31,7 +32,7 @@ function lsSet(k, v) {
 
 let gh = null;
 let timer = null;
-const job = { id: null, phaseKey: '', work: null, status: null, reqs: [], choice: null, naver: null, draft: null, title: 0, urls: {}, direct: false, keyword: null };
+const job = { id: null, phaseKey: '', reviewKey: '', edits: {}, work: null, status: null, reqs: [], choice: null, naver: null, draft: null, title: 0, urls: {}, direct: false, keyword: null };
 
 function toast(msg, bad = false) {
   const t = $('#toast');
@@ -163,6 +164,15 @@ async function loadJob(id) {
   const dir = jobDir(id);
   const [work, status, choice, naver, reqs] = await Promise.all([gh.readJson(`${dir}/work.json`), gh.readJson(`${dir}/status.json`), gh.readJson(`${dir}/choice.json`), gh.readJson(`${dir}/naver.json`), gh.list(`${dir}/req`)]);
   if (!work) throw new Error('작업을 찾지 못했습니다');
+  // 폰에서 고친 상품 칸은 새로 받은 작업에도 다시 얹는다 (1분마다 다시 받아도 지워지지 않게)
+  for (const [i, fields] of Object.entries(job.edits)) {
+    const p = work.products?.[Number(i)];
+    if (!p) continue;
+    for (const [k, v] of Object.entries(fields)) {
+      if (k === 'keyword') p.keyword = v;
+      else editField(p, k, v);
+    }
+  }
   Object.assign(job, { work, status, choice, naver, reqs: reqs.map(reqStage) });
   const phase = jobPhase(job);
   if (phase === 'draft' && job.draft?.id !== status.draftId) {
@@ -174,7 +184,7 @@ async function loadJob(id) {
 
 async function openJob(id) {
   stopPolling();
-  if (job.id !== id) Object.assign(job, { id, phaseKey: '', draft: null, direct: false, keyword: null });
+  if (job.id !== id) Object.assign(job, { id, phaseKey: '', reviewKey: '', edits: {}, draft: null, direct: false, keyword: null });
   view.innerHTML = '<p class="hint center">불러오는 중…</p>';
   await refreshJob(true);
 }
@@ -188,8 +198,9 @@ async function refreshJob(force = false) {
     if (force || key !== job.phaseKey) {
       job.phaseKey = key;
       render(phase);
-    }
-    const waiting = phase === 'extracting' || phase === 'generating' || (job.choice?.route === 'laptop' && !job.naver?.done && !job.naver?.error);
+    } else paintReviews(); // 리뷰만 바뀌었으면 그 칸만 바꾼다 (메모를 말하는 중에 화면이 다시 그려지지 않게)
+    const reviewsRunning = Object.values(job.work.reviews || {}).some((r) => r.state === 'running');
+    const waiting = reviewsRunning || phase === 'extracting' || phase === 'generating' || (job.choice?.route === 'laptop' && !job.naver?.done && !job.naver?.error);
     if (waiting) timer = setTimeout(() => refreshJob(), 8000);
   } catch (e) {
     if (force) view.innerHTML = `<section class="card"><p class="bad">${esc(e.message)}</p><a class="btn ghost" href="#/">처음으로</a></section>`;
@@ -205,6 +216,19 @@ function render(phase) {
   }[phase] || '';
   view.innerHTML = `<a class="back" href="#/">‹ 처음으로</a>${banner}${phase === 'draft' ? draftHtml() : phase === 'generating' ? '' : inputHtml(phase)}`;
   if (phase === 'draft') mountPreview();
+  job.reviewKey = '';
+  paintReviews();
+}
+
+/** 상품마다 다이소몰 리뷰 장단점 카드 (보기만 한다) */
+function paintReviews() {
+  const key = JSON.stringify(job.work?.reviews || {});
+  if (key === job.reviewKey) return;
+  job.reviewKey = key;
+  for (const slot of document.querySelectorAll('.rv-slot')) {
+    const p = job.work.products[Number(slot.dataset.i)];
+    slot.innerHTML = reviewCardHtml(reviewFor(job.work, p), { open: slot.dataset.open === '1' });
+  }
 }
 
 function inputHtml(phase) {
@@ -216,6 +240,7 @@ function inputHtml(phase) {
   const products = w.products.map((p, i) => `<div class="product"><h3>상품 ${i + 1}</h3>
       ${[['name', '상품명'], ['price', '가격'], ['code', '품번']].map(([k, label]) => `<label class="field">${label}${p[k]?.status === '확인됨' || p[k]?.source === 'user' ? '' : ' <em>못 읽음</em>'}<input data-p="${i}" data-k="${k}" value="${esc(p[k]?.value)}"></label>`).join('')}
       ${multi ? `<label class="field">상품 키워드<input data-p="${i}" data-k="keyword" value="${esc(p.keyword)}"></label>` : ''}
+      <div class="rv-slot" data-i="${i}" data-open="1"></div>
     </div>`).join('');
   return `<section class="card">
       <h2>메모</h2>
@@ -269,6 +294,7 @@ function draftHtml() {
     </section>
     ${notes.length ? `<section class="card"><h2>확인할 것 ${notes.length}개</h2><ul class="notes">${notes.map((n) => `<li>${esc(n)}</li>`).join('')}</ul></section>` : ''}
     ${d.notes ? `<p class="hint">AI 메모: ${esc(d.notes)}</p>` : ''}
+    ${job.work.products.some((p) => reviewFor(job.work, p)) ? `<section class="card"><h2>다이소몰 리뷰</h2>${job.work.products.map((p, i) => `<div class="rv-slot" data-i="${i}"></div>`).join('')}</section>` : ''}
     <section class="card preview"><div id="preview" class="phone"></div></section>
     ${after}
     ${job.direct ? directHtml() : ''}
@@ -437,6 +463,7 @@ document.addEventListener('input', (e) => {
     const p = job.work.products[Number(t.dataset.p)];
     if (t.dataset.k === 'keyword') p.keyword = t.value;
     else editField(p, t.dataset.k, t.value);
+    (job.edits[t.dataset.p] ||= {})[t.dataset.k] = t.value;
   }
 });
 
